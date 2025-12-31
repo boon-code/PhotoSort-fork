@@ -95,7 +95,7 @@ struct Arguments {
     /// Name analysis tries to extract the date from the file name, Exif analysis tries to extract the date from the EXIF data.
     #[arg(short, long, default_value = "exif_then_name")]
     analysis_mode: AnalysisType,
-    /// The EXIF date field to use, possible values are `modify`, `creation`, `digitized`. EXIF data contains several date fields.
+    /// The EXIF date field to use, possible values are `modify`, `create`, `digitized`. EXIF data contains several date fields.
     /// `Modify` is the modification date, which is updated when the file is edited.
     /// `Create` is the creation date, which is usually the date when the photo was taken.
     /// `Digitize` is the digitized date, which is the date when the photo was digitized (for example, when converting a film photo to a digital image).
