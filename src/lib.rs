@@ -20,24 +20,54 @@ pub mod action;
 pub mod analysis;
 pub mod name;
 
-/// `AnalysisType` is an enumeration that defines the different types of analysis that can be performed on a file.
+/// `AnalysisMode` defines the existing image analysis modes that can be enabled
 ///
 /// # Variants
 ///
-/// * `OnlyExif` - Represents the action of analyzing a file based only on its Exif data.
-/// * `OnlyName` - Represents the action of analyzing a file based only on its name.
-/// * `ExifThenName` - Represents the action of analyzing a file based first on its Exif data, then on its name if the Exif data is not sufficient.
-/// * `NameThenExif` - Represents the action of analyzing a file based first on its name, then on its Exif data if the name is not sufficient.
+/// * `Exif` - Analyze a file based on its Exif data.
+/// * `Name` - Analyze a file based on its name.
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
-pub enum AnalysisType {
-    OnlyExif,
-    OnlyName,
-    ExifThenName,
-    NameThenExif,
+#[repr(u32)]
+pub enum AnalysisMode {
+    Exif = (1 << 0),
+    Name = (1 << 1),
 }
+
+/// Implementation of the `FromStr` trait for `AnalysisMode`.
+///
+/// This allows a string to be parsed into the `AnalysisMode` enum.
+///
+/// # Arguments
+///
+/// * `s` - A string slice that should be parsed into an `AnalysisType`.
+///
+/// # Returns
+///
+/// * `Result<Self, Self::Err>` - Returns `Ok(AnalysisMode)` if the string could be parsed into an `AnalysisMode`, `Err(anyhow::Error)` otherwise.
+impl FromStr for AnalysisMode {
+    type Err = anyhow::Error;
+
+    fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
+        match s {
+            "exif" => Ok(AnalysisMode::Exif),
+            "name" => Ok(AnalysisMode::Name),
+            _ => Err(anyhow!("Unsupported analysis type '{s}'")),
+        }
+    }
+}
+
+/// `AnalysisType` defines the sequence of analysis modes that are tried
+///
+/// The `iter()` function provides an Iterator that allows to go through all enabled analysis modes
+/// as specified in `AnalysisMode`
+#[derive(Debug, Clone)]
+pub struct AnalysisType {
+    analysis_types: Vec<AnalysisMode>,
+}
+
 /// Implementation of the `FromStr` trait for `AnalysisType`.
 ///
-/// This allows a string to be parsed into the `AnalysisType` enum.
+/// This allows a string to be parsed into the `AnalysisType` struct.
 ///
 /// # Arguments
 ///
@@ -51,12 +81,44 @@ impl FromStr for AnalysisType {
 
     fn from_str(s: &str) -> Result<Self> {
         match s.to_lowercase().as_str() {
-            "only_exif" | "exif" => Ok(AnalysisType::OnlyExif),
-            "only_name" | "name" => Ok(AnalysisType::OnlyName),
-            "exif_then_name" | "exif_name" => Ok(AnalysisType::ExifThenName),
-            "name_then_exif" | "name_exif" => Ok(AnalysisType::NameThenExif),
-            _ => Err(anyhow::anyhow!("Invalid analysis type")),
+            "only_exif" | "exif" => Self::new(vec![AnalysisMode::Exif]),
+            "only_name" | "name" => Self::new(vec![AnalysisMode::Name]),
+            "exif_then_name" | "exif_name" => {
+                Self::new(vec![AnalysisMode::Exif, AnalysisMode::Name])
+            }
+            "name_then_exif" | "name_exif" => {
+                Self::new(vec![AnalysisMode::Name, AnalysisMode::Exif])
+            }
+            _ => Self::new_from_str(s),
         }
+    }
+}
+
+impl AnalysisType {
+    fn new(v: Vec<AnalysisMode>) -> Result<Self> {
+        let mut bits_set = 0_u32;
+        for i in v.iter() {
+            let bit = *i as u32;
+            if bits_set & bit != 0 {
+                return Err(anyhow!("Enum {:?} is already in the list: {:?}", i, v));
+            }
+            bits_set |= bit;
+        }
+
+        Ok(AnalysisType { analysis_types: v })
+    }
+
+    fn new_from_str(s: &str) -> Result<Self> {
+        let mut v = Vec::new();
+        for i in s.split(',') {
+            v.push(AnalysisMode::from_str(i)?);
+        }
+
+        Self::new(v)
+    }
+
+    pub fn iter<'a>(&'a self) -> core::slice::Iter<'a, AnalysisMode> {
+        self.analysis_types.iter()
     }
 }
 
@@ -278,48 +340,60 @@ impl Analyzer {
             return Err(anyhow::anyhow!("Invalid file extension"));
         }
 
-        Ok(match self.settings.analysis_type {
-            AnalysisType::OnlyExif => {
-                let exif_result = self
-                    .analyze_exif(path)
-                    .map_err(|e| anyhow!("Error analyzing Exif data: {e}"))?;
-                let name_result = self.analyze_name(name);
+        let (name_result, name_str) = match self.analyze_name(name) {
+            Ok(x) => (Ok(x.0), x.1),
+            Err(e) => (Err(e), name.to_string()),
+        };
+        let mut name_result = Some(name_result);
+        let mut last_result = None;
+        let mut fallback = false;
 
-                match name_result {
-                    Ok((_, name)) => (exif_result, name),
-                    Err(_err) => (exif_result, name.to_string()),
-                }
+        for i in self.settings.analysis_type.iter() {
+            if fallback {
+                info!(
+                    "Falling back to {:?} analysis for file {}",
+                    i,
+                    path.display()
+                );
             }
-            AnalysisType::OnlyName => self.analyze_name(name)?,
-            AnalysisType::ExifThenName => {
-                let exif_result = self.analyze_exif(path);
-                let exif_result = match exif_result {
-                    Err(e) => {
+
+            let res = match i {
+                AnalysisMode::Exif => {
+                    let exif_result = self.analyze_exif(path);
+
+                    if let Err(e) = exif_result.as_ref() {
                         warn!("Error analyzing Exif data: {} for {}", e, path.display());
-                        info!("Falling back to name analysis");
-                        None
                     }
-                    Ok(date) => date,
-                };
-                let name_result = self.analyze_name(name);
 
-                match exif_result {
-                    Some(date) => match name_result {
-                        Ok((_, name)) => (Some(date), name),
-                        Err(_err) => (Some(date), name.to_string()),
-                    },
-                    None => name_result?,
+                    exif_result
                 }
-            }
-            AnalysisType::NameThenExif => {
-                let name_result = self.analyze_name(name)?;
-                if name_result.0.is_none() {
-                    (self.analyze_exif(path)?, name_result.1)
-                } else {
+                AnalysisMode::Name => {
+                    // Guaranteed to work, as Name can only be in the list once
+                    let name_result = name_result.take().unwrap();
+
+                    if let Err(e) = name_result.as_ref() {
+                        warn!(
+                            "Error analyzing the file name to get the data: {} for {}",
+                            e,
+                            path.display()
+                        );
+                    }
                     name_result
                 }
+            };
+            let success = res.as_ref().map(|x| x.is_some()).unwrap_or(false);
+            last_result.replace(res);
+            if success {
+                break;
+            } else {
+                fallback = true;
             }
-        })
+        }
+
+        last_result.map_or_else(
+            || Err(anyhow!("No analysis mode selected")),
+            |res| Ok((res?, name_str)),
+        )
     }
 
     /// Replaces {name}, {date}, ... in a format with actual values
@@ -684,3 +758,6 @@ pub fn find_files_in_source(
     }
     Ok(())
 }
+
+#[cfg(test)]
+mod tests;
