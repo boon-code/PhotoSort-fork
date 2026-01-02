@@ -373,6 +373,8 @@ impl Analyzer {
                 );
             }
 
+            debug!("Try analysis mode {:?}", i);
+
             let res = match i {
                 AnalysisMode::Exif => {
                     let exif_result = self.analyze_exif(path);
