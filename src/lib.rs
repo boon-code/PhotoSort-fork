@@ -31,6 +31,8 @@ pub mod name;
 pub enum AnalysisMode {
     Exif = (1 << 0),
     Name = (1 << 1),
+    #[cfg(feature = "takeout")]
+    Takeout = (1 << 2),
 }
 
 /// Implementation of the `FromStr` trait for `AnalysisMode`.
@@ -51,6 +53,8 @@ impl FromStr for AnalysisMode {
         match s {
             "exif" => Ok(AnalysisMode::Exif),
             "name" => Ok(AnalysisMode::Name),
+            #[cfg(feature = "takeout")]
+            "takeout" => Ok(AnalysisMode::Takeout),
             _ => Err(anyhow!("Unsupported analysis type '{s}'")),
         }
     }
@@ -154,6 +158,8 @@ pub struct AnalyzerSettings {
     pub video_extensions: Vec<String>,
     pub action_type: ActionMode,
     pub mkdir: bool,
+    #[cfg(feature = "takeout")]
+    pub takeout_search_dir: Option<PathBuf>,
 }
 
 static RE_DETECT_NAME_FORMAT_COMMAND: LazyLock<regex::Regex> = LazyLock::new(|| {
@@ -305,6 +311,16 @@ impl Analyzer {
         Err(anyhow::anyhow!("File extension is not valid"))
     }
 
+    #[cfg(feature = "takeout")]
+    fn analyze_takeout<A: AsRef<Path>>(
+        &self,
+        path: A,
+        search_path: Option<A>,
+    ) -> Result<Option<NaiveDateTime>> {
+        let takeout_time = analysis::takeout::get_takeout_time(path, search_path)?;
+        Ok(takeout_time)
+    }
+
     /// Analyzes a file for a date based on the `Analyzer`'s settings.
     ///
     /// # Arguments
@@ -379,6 +395,21 @@ impl Analyzer {
                         );
                     }
                     name_result
+                }
+                #[cfg(feature = "takeout")]
+                AnalysisMode::Takeout => {
+                    let search_dir = self
+                        .settings
+                        .takeout_search_dir
+                        .as_ref()
+                        .map(|x| x.as_path());
+                    let takeout_result = self.analyze_takeout(path, search_dir);
+
+                    if let Err(e) = takeout_result.as_ref() {
+                        warn!("Error analyzing Takeout data: {} for {}", e, path.display());
+                    }
+
+                    takeout_result
                 }
             };
             let success = res.as_ref().map(|x| x.is_some()).unwrap_or(false);

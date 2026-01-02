@@ -103,6 +103,11 @@ struct Arguments {
     /// The default is `create`.
     #[arg(long = "date-field", default_value = "create")]
     exif_date_type: ExifDateType,
+    #[cfg(feature = "takeout")]
+    /// Directory to search for meta-data files if the takeout analysis mode is enabled.
+    /// The default search path is in the directory of the currently analyzed file.
+    #[arg(long)]
+    takeout_search_dir: Option<PathBuf>,
     /// The action mode, possible values are `move`, `copy`, `hardlink`, `relative_symlink`, `absolute_symlink`.
     /// `Move` will move the files, `Copy` will copy the files, `Hardlink` (alias: `hard`) will create hardlinks, `RelativeSymlink` (alias: `relsym`) will create relative symlinks, `AbsoluteSymlink` (alias: `abssym`) will create absolute symlinks.
     #[arg(short, long, default_value = "move")]
@@ -270,6 +275,8 @@ pub fn main() {
         },
         #[cfg(feature = "video")]
         video_extensions: args.video_extensions.clone(),
+        #[cfg(feature = "takeout")]
+        takeout_search_dir: args.takeout_search_dir.clone(),
     });
     let mut analyzer = match result {
         Ok(a) => {
